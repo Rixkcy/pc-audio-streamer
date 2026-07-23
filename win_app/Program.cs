@@ -37,6 +37,19 @@ namespace PcAudioStreamer
         }
     }
 
+    public class LowLatencyWasapiLoopbackCapture : WasapiCapture
+    {
+        public LowLatencyWasapiLoopbackCapture(MMDevice captureDevice)
+            : base(captureDevice, true, 5) // Request ultra-low 5ms kernel capture period!
+        {
+        }
+
+        protected override AudioClientStreamFlags GetAudioClientStreamFlags()
+        {
+            return AudioClientStreamFlags.Loopback;
+        }
+    }
+
     public class MainForm : Form
     {
         private NotifyIcon _notifyIcon;
@@ -47,8 +60,10 @@ namespace PcAudioStreamer
         private ToolStripMenuItem _statusItem;
 
         private TcpListener _tcpListener;
+        private UdpClient _udpBroadcaster;
+        private IPEndPoint _udpEndPoint;
         private CancellationTokenSource _cts;
-        private WasapiLoopbackCapture _audioCapture;
+        private WasapiCapture _audioCapture;
         private MMDevice _speakerDevice;
 
         private StreamMode _currentMode = StreamMode.PhoneOnly;
@@ -57,6 +72,7 @@ namespace PcAudioStreamer
 
         private const string AppName = "PcAudioStreamer";
         private const int Port = 8080;
+        private const int UdpPort = 8081;
         private const int WM_HOTKEY = 0x0312;
 
         public MainForm()
@@ -67,6 +83,7 @@ namespace PcAudioStreamer
             FindSpeakerDevice();
             InitializeTray();
             RegisterStartupIfRequested();
+            StartUdpBroadcaster();
             StartAudioCapture();
             StartTcpServer();
             RegisterGlobalHotkey();
@@ -89,6 +106,18 @@ namespace PcAudioStreamer
             {
                 File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "device.log"), ex.ToString());
             }
+        }
+
+        private void StartUdpBroadcaster()
+        {
+            try
+            {
+                _udpBroadcaster = new UdpClient();
+                _udpBroadcaster.Client.SendBufferSize = 65536;
+                // Target broadcast to USB Tethering network interface
+                _udpEndPoint = new IPEndPoint(IPAddress.Broadcast, UdpPort);
+            }
+            catch { }
         }
 
         private void OnVolumeChanged(AudioVolumeNotificationData data)
@@ -274,7 +303,14 @@ namespace PcAudioStreamer
             {
                 if (_speakerDevice != null)
                 {
-                    _audioCapture = new WasapiLoopbackCapture(_speakerDevice);
+                    try
+                    {
+                        _audioCapture = new LowLatencyWasapiLoopbackCapture(_speakerDevice);
+                    }
+                    catch
+                    {
+                        _audioCapture = new WasapiLoopbackCapture(_speakerDevice);
+                    }
                 }
                 else
                 {
@@ -295,14 +331,26 @@ namespace PcAudioStreamer
 
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
-            if (_currentMode == StreamMode.SpeakersOnly || _connectedClients == 0 || e.BytesRecorded == 0)
+            if (_currentMode == StreamMode.SpeakersOnly || e.BytesRecorded == 0)
                 return;
 
             byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded);
             if (pcm16Stereo.Length == 0) return;
 
-            // Direct Real-Time Broadcast (0 Thread Sleep Delay, 0 Starvation Crackle)
-            TcpBroadcastManager.BroadcastAudioData(pcm16Stereo, pcm16Stereo.Length);
+            // Send via Dual Protocol (TCP WebSocket + Low-Latency UDP Datagram Socket)
+            if (_connectedClients > 0)
+            {
+                TcpBroadcastManager.BroadcastAudioData(pcm16Stereo, pcm16Stereo.Length);
+            }
+
+            if (_udpBroadcaster != null)
+            {
+                try
+                {
+                    _udpBroadcaster.Send(pcm16Stereo, pcm16Stereo.Length, _udpEndPoint);
+                }
+                catch { }
+            }
 
             double sum = 0;
             for (int i = 0; i < pcm16Stereo.Length; i += 2)
@@ -455,6 +503,7 @@ namespace PcAudioStreamer
             UnregisterHotKey(this.Handle, 1);
             _cts?.Cancel();
             _audioCapture?.StopRecording();
+            _udpBroadcaster?.Close();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
             Application.Exit();

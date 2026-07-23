@@ -17,6 +17,8 @@ import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,6 +26,9 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
     private static final String CHANNEL_ID = "AudioStreamChannel";
     private AudioTrack audioTrack;
     private HttpWebSocketClient wsClient;
+    private DatagramSocket udpSocket;
+    private Thread udpReceiverThread;
+    private boolean isUdpRunning = false;
     private AudioManager audioManager;
     private AudioFocusRequest focusRequest;
     private static String lastStatus = "Initializing...";
@@ -45,7 +50,31 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         requestAudioFocus();
         initAudioTrack(48000);
+        startUdpListener();
         startStreaming();
+    }
+
+    private void startUdpListener() {
+        isUdpRunning = true;
+        udpReceiverThread = new Thread(() -> {
+            byte[] buffer = new byte[65536];
+            try {
+                udpSocket = new DatagramSocket(8081);
+                udpSocket.setReceiveBufferSize(65536);
+                Log.d("AudioDiag", "UDP Listener Started on port 8081");
+
+                while (isUdpRunning && !udpSocket.isClosed()) {
+                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                    udpSocket.receive(packet);
+                    if (packet.getLength() > 0) {
+                        OnAudioData(buffer, packet.getLength());
+                    }
+                }
+            } catch (Exception ex) {
+                Log.d("AudioDiag", "UDP Listener Exception: " + ex.getMessage());
+            }
+        });
+        udpReceiverThread.start();
     }
 
     private void requestAudioFocus() {
@@ -104,9 +133,9 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
 
-        // 60ms Buffer Cap (2880 stereo frames = 60ms) -> Perfect 100% Crystal Clear Cushion!
+        // 30ms Buffer Cap (1440 stereo frames = 30ms cap)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            int targetFrames = sampleRate * 60 / 1000;
+            int targetFrames = sampleRate * 30 / 1000;
             audioTrack.setBufferSizeInFrames(targetFrames);
         }
 
@@ -238,6 +267,8 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
 
     @Override
     public void onDestroy() {
+        isUdpRunning = false;
+        if (udpSocket != null) udpSocket.close();
         if (wsClient != null) wsClient.stop();
         if (audioTrack != null) {
             audioTrack.stop();
