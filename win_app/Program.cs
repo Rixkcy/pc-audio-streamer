@@ -301,8 +301,15 @@ namespace PcAudioStreamer
             byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded);
             if (pcm16Stereo.Length == 0) return;
 
-            // Direct Real-Time Streaming over TCP WebSocket (NoDelay = true)
-            TcpBroadcastManager.BroadcastAudioData(pcm16Stereo, pcm16Stereo.Length);
+            // Micro-chunking to Bluetooth MTU frame size: 1024 bytes (~5.3ms of 48kHz Stereo 16-bit PCM)
+            int chunkSize = 1024;
+            for (int offset = 0; offset < pcm16Stereo.Length; offset += chunkSize)
+            {
+                int size = Math.Min(chunkSize, pcm16Stereo.Length - offset);
+                byte[] chunk = new byte[size];
+                Buffer.BlockCopy(pcm16Stereo, offset, chunk, 0, size);
+                TcpBroadcastManager.BroadcastAudioData(chunk, size);
+            }
 
             double sum = 0;
             for (int i = 0; i < pcm16Stereo.Length; i += 2)
