@@ -51,9 +51,10 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
     private void requestAudioFocus() {
         if (audioManager == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // USAGE_VOICE_COMMUNICATION forces Android Bluetooth stack into Low-Latency SCO Fast Path (bypasses 500ms A2DP music buffer!)
             AudioAttributes attributes = new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .setFlags(AudioAttributes.FLAG_LOW_LATENCY)
                     .build();
             focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -63,7 +64,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                     .build();
             audioManager.requestAudioFocus(focusRequest);
         } else {
-            audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            audioManager.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN);
         }
     }
 
@@ -85,8 +86,8 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
         );
 
         AudioAttributes attributes = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_GAME)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .setFlags(AudioAttributes.FLAG_LOW_LATENCY)
                 .build();
 
@@ -104,9 +105,9 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
 
-        // 60ms Buffer Cap (2880 stereo frames = 60ms) -> Perfect 100% Crystal Clear Cushion!
+        // 20ms Buffer Cap (960 stereo frames = 20ms cap)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            int targetFrames = sampleRate * 60 / 1000;
+            int targetFrames = sampleRate * 20 / 1000;
             audioTrack.setBufferSizeInFrames(targetFrames);
         }
 
