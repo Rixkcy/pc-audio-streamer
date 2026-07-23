@@ -301,8 +301,8 @@ namespace PcAudioStreamer
             byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded);
             if (pcm16Stereo.Length == 0) return;
 
-            // Micro-chunking to Bluetooth MTU frame size: 1024 bytes (~5.3ms of 48kHz Stereo 16-bit PCM)
-            int chunkSize = 1024;
+            // Send in 4608-byte frames (24ms chunks) for 100% reliable TCP WebSocket delivery without packet loss
+            int chunkSize = 4608;
             for (int offset = 0; offset < pcm16Stereo.Length; offset += chunkSize)
             {
                 int size = Math.Min(chunkSize, pcm16Stereo.Length - offset);

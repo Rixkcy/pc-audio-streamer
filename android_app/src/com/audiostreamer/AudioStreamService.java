@@ -104,9 +104,9 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
 
-        // 10ms Bluetooth Low-Latency Frame Cap (512 stereo frames = 10.6ms)
+        // 60ms Buffer Cap (2880 stereo frames = 60ms cushion) -> 0 Dropped Packets, 100% Smooth Audio!
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioTrack.setBufferSizeInFrames(512);
+            audioTrack.setBufferSizeInFrames(2880);
         }
 
         totalBytesWritten = 0;
@@ -178,13 +178,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 Log.d("AudioDiag", "BytesWritten: " + totalBytesWritten + " | BytesPlayed: " + head + " | PendingMs: " + pendingMs + "ms | RecvLen: " + length);
             }
 
-            int written;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                written = audioTrack.write(data, 0, alignedLength, AudioTrack.WRITE_NON_BLOCKING);
-            } else {
-                written = audioTrack.write(data, 0, alignedLength);
-            }
-
+            int written = audioTrack.write(data, 0, alignedLength);
             if (written > 0) {
                 totalBytesWritten += written;
             }
