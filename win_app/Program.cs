@@ -37,6 +37,19 @@ namespace PcAudioStreamer
         }
     }
 
+    public class FastWasapiLoopbackCapture : WasapiCapture
+    {
+        public FastWasapiLoopbackCapture(MMDevice captureDevice)
+            : base(captureDevice, true, 20) // Request 20ms Windows kernel buffer instead of default 100ms!
+        {
+        }
+
+        protected override AudioClientStreamFlags GetAudioClientStreamFlags()
+        {
+            return AudioClientStreamFlags.Loopback;
+        }
+    }
+
     public class MainForm : Form
     {
         private NotifyIcon _notifyIcon;
@@ -48,7 +61,7 @@ namespace PcAudioStreamer
 
         private TcpListener _tcpListener;
         private CancellationTokenSource _cts;
-        private WasapiLoopbackCapture _audioCapture;
+        private WasapiCapture _audioCapture;
         private MMDevice _speakerDevice;
 
         private StreamMode _currentMode = StreamMode.PhoneOnly;
@@ -274,7 +287,14 @@ namespace PcAudioStreamer
             {
                 if (_speakerDevice != null)
                 {
-                    _audioCapture = new WasapiLoopbackCapture(_speakerDevice);
+                    try
+                    {
+                        _audioCapture = new FastWasapiLoopbackCapture(_speakerDevice);
+                    }
+                    catch
+                    {
+                        _audioCapture = new WasapiLoopbackCapture(_speakerDevice);
+                    }
                 }
                 else
                 {
@@ -301,7 +321,7 @@ namespace PcAudioStreamer
             byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded);
             if (pcm16Stereo.Length == 0) return;
 
-            // Send in 4608-byte frames (24ms chunks) for 100% reliable TCP WebSocket delivery without packet loss
+            // Stream in 4608-byte micro-frames directly to TCP WebSocket
             int chunkSize = 4608;
             for (int offset = 0; offset < pcm16Stereo.Length; offset += chunkSize)
             {
