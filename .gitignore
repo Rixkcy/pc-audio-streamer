@@ -1,0 +1,10 @@
+# Build outputs
+win_app/*.exe
+win_app/*.log
+win_app/*.wav
+android_app/bin/
+*.log
+
+# Temp files
+*.tmp
+.DS_Store
