@@ -40,7 +40,7 @@ namespace PcAudioStreamer
     public class LowLatencyWasapiLoopbackCapture : WasapiCapture
     {
         public LowLatencyWasapiLoopbackCapture(MMDevice captureDevice)
-            : base(captureDevice, true, 5) // Request ultra-low 5ms kernel capture period!
+            : base(captureDevice, true, 10) // 10ms low latency capture
         {
         }
 
@@ -61,7 +61,6 @@ namespace PcAudioStreamer
 
         private TcpListener _tcpListener;
         private UdpClient _udpBroadcaster;
-        private IPEndPoint _udpEndPoint;
         private CancellationTokenSource _cts;
         private WasapiCapture _audioCapture;
         private MMDevice _speakerDevice;
@@ -113,9 +112,8 @@ namespace PcAudioStreamer
             try
             {
                 _udpBroadcaster = new UdpClient();
+                _udpBroadcaster.EnableBroadcast = true;
                 _udpBroadcaster.Client.SendBufferSize = 65536;
-                // Target broadcast to USB Tethering network interface
-                _udpEndPoint = new IPEndPoint(IPAddress.Broadcast, UdpPort);
             }
             catch { }
         }
@@ -337,7 +335,7 @@ namespace PcAudioStreamer
             byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded);
             if (pcm16Stereo.Length == 0) return;
 
-            // Send via Dual Protocol (TCP WebSocket + Low-Latency UDP Datagram Socket)
+            // Broadcast via Dual Protocols (TCP WebSocket + Direct UDP Cable Datagrams)
             if (_connectedClients > 0)
             {
                 TcpBroadcastManager.BroadcastAudioData(pcm16Stereo, pcm16Stereo.Length);
@@ -345,11 +343,7 @@ namespace PcAudioStreamer
 
             if (_udpBroadcaster != null)
             {
-                try
-                {
-                    _udpBroadcaster.Send(pcm16Stereo, pcm16Stereo.Length, _udpEndPoint);
-                }
-                catch { }
+                TcpBroadcastManager.SendUdpDirect(_udpBroadcaster, pcm16Stereo, pcm16Stereo.Length, UdpPort);
             }
 
             double sum = 0;
@@ -437,8 +431,10 @@ namespace PcAudioStreamer
                     byte[] respBytes = Encoding.UTF8.GetBytes(response);
                     await stream.WriteAsync(respBytes, 0, respBytes.Length, ct);
 
+                    IPAddress clientIp = ((IPEndPoint)client.Client.RemoteEndPoint).Address;
+
                     Interlocked.Increment(ref _connectedClients);
-                    TcpBroadcastManager.AddClient(client);
+                    TcpBroadcastManager.AddClient(client, clientIp);
                     UpdateStatusText();
 
                     try
@@ -518,24 +514,49 @@ namespace PcAudioStreamer
 
     public static class TcpBroadcastManager
     {
-        private static readonly ConcurrentDictionary<int, TcpClient> Clients = new();
+        private class ClientNode
+        {
+            public TcpClient Client { get; set; }
+            public IPAddress Ip { get; set; }
+            public IPEndPoint UdpEndPoint { get; set; }
+        }
+
+        private static readonly ConcurrentDictionary<int, ClientNode> Clients = new();
         private static int _nextId = 0;
 
-        public static void AddClient(TcpClient client)
+        public static void AddClient(TcpClient client, IPAddress ip)
         {
             int id = Interlocked.Increment(ref _nextId);
-            Clients.TryAdd(id, client);
+            var node = new ClientNode
+            {
+                Client = client,
+                Ip = ip,
+                UdpEndPoint = new IPEndPoint(ip, 8081)
+            };
+            Clients.TryAdd(id, node);
         }
 
         public static void RemoveClient(TcpClient client)
         {
             foreach (var kv in Clients)
             {
-                if (kv.Value == client)
+                if (kv.Value.Client == client)
                 {
                     Clients.TryRemove(kv.Key, out _);
                     break;
                 }
+            }
+        }
+
+        public static void SendUdpDirect(UdpClient udp, byte[] data, int length, int port)
+        {
+            foreach (var kv in Clients)
+            {
+                try
+                {
+                    udp.Send(data, length, kv.Value.UdpEndPoint);
+                }
+                catch { }
             }
         }
 
@@ -544,11 +565,11 @@ namespace PcAudioStreamer
             byte[] frame = CreateWebSocketFrame(data, length);
             foreach (var kv in Clients)
             {
-                if (kv.Value.Connected)
+                if (kv.Value.Client.Connected)
                 {
                     try
                     {
-                        kv.Value.GetStream().Write(frame, 0, frame.Length);
+                        kv.Value.Client.GetStream().Write(frame, 0, frame.Length);
                     }
                     catch
                     {
