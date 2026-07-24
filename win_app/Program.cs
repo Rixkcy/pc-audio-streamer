@@ -37,19 +37,6 @@ namespace PcAudioStreamer
         }
     }
 
-    public class FastWasapiLoopbackCapture : WasapiCapture
-    {
-        public FastWasapiLoopbackCapture(MMDevice captureDevice)
-            : base(captureDevice, true, 20) // Request 20ms Windows kernel buffer instead of default 100ms!
-        {
-        }
-
-        protected override AudioClientStreamFlags GetAudioClientStreamFlags()
-        {
-            return AudioClientStreamFlags.Loopback;
-        }
-    }
-
     public class MainForm : Form
     {
         private NotifyIcon _notifyIcon;
@@ -61,7 +48,7 @@ namespace PcAudioStreamer
 
         private TcpListener _tcpListener;
         private CancellationTokenSource _cts;
-        private WasapiCapture _audioCapture;
+        private WasapiLoopbackCapture _audioCapture;
         private MMDevice _speakerDevice;
 
         private StreamMode _currentMode = StreamMode.PhoneOnly;
@@ -113,7 +100,7 @@ namespace PcAudioStreamer
                     _isEnforcingMute = true;
                     try
                     {
-                        _speakerDevice.AudioEndpointVolume.Mute = true;
+                        if (_speakerDevice != null) _speakerDevice.AudioEndpointVolume.Mute = true;
                     }
                     catch { }
                     finally
@@ -285,27 +272,11 @@ namespace PcAudioStreamer
         {
             try
             {
-                if (_speakerDevice != null)
-                {
-                    try
-                    {
-                        _audioCapture = new FastWasapiLoopbackCapture(_speakerDevice);
-                    }
-                    catch
-                    {
-                        _audioCapture = new WasapiLoopbackCapture(_speakerDevice);
-                    }
-                }
-                else
-                {
-                    _audioCapture = new WasapiLoopbackCapture();
-                }
-
+                _audioCapture = new WasapiLoopbackCapture();
                 _audioCapture.DataAvailable += OnAudioDataAvailable;
                 _audioCapture.StartRecording();
                 File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wasapi_error.log"),
-                    $"WasapiLoopbackCapture Started on: {(_speakerDevice?.FriendlyName ?? "Default")}\n" +
-                    $"Format: {_audioCapture.WaveFormat}");
+                    $"WasapiLoopbackCapture Started. Format: {_audioCapture.WaveFormat}");
             }
             catch (Exception ex)
             {
