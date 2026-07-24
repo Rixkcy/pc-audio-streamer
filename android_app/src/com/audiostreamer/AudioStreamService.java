@@ -98,7 +98,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                 .build();
 
-        int bufferSize = Math.max(minBufferSize, sampleRate * 4 * 40 / 1000); // 40ms Fast Buffer
+        int bufferSize = Math.max(minBufferSize, sampleRate * 4 * 60 / 1000); // 60ms Smooth Buffer
 
         audioTrack = new AudioTrack.Builder()
                 .setAudioAttributes(attributes)
@@ -109,7 +109,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .build();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            int targetFrames = sampleRate * 40 / 1000;
+            int targetFrames = sampleRate * 60 / 1000;
             audioTrack.setBufferSizeInFrames(targetFrames);
         }
 
@@ -178,8 +178,8 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
             long pendingBytes = totalBytesWritten - head;
             long pendingMs = pendingBytes * 1000 / (currentSampleRate * 4);
 
-            // ANTI-DRIFT: Purge if buffer queue exceeds 40ms!
-            if (pendingMs > 40) {
+            // ANTI-DRIFT: Only purge if buffer queue exceeds 120ms to avoid audio truncation artifacts
+            if (pendingMs > 120) {
                 try {
                     audioTrack.pause();
                     audioTrack.flush();

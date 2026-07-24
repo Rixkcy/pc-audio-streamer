@@ -212,8 +212,8 @@ namespace PcAudioStreamer
 
             _wasSilent = false;
 
-            // Micro-slice into 2,304-byte frames (12ms chunks at 48kHz Stereo 16-bit PCM)
-            int chunkSize = 2304;
+            // Aligned 3840-byte frames (20ms native WASAPI hardware frame size at 48kHz Stereo 16-bit)
+            int chunkSize = 3840;
             for (int offset = 0; offset < pcm16Stereo.Length; offset += chunkSize)
             {
                 int size = Math.Min(chunkSize, pcm16Stereo.Length - offset);
