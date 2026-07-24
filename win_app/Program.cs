@@ -207,13 +207,13 @@ namespace PcAudioStreamer
                     byte[] pauseFrame = TcpBroadcastManager.CreateTextWebSocketFrame("PAUSE");
                     TcpBroadcastManager.BroadcastFrame(pauseFrame);
                 }
-                return; // Do not stream silence frames to TCP buffer!
+                return;
             }
 
             _wasSilent = false;
 
-            // Stream 4608-byte frames directly to TCP WebSocket
-            int chunkSize = 4608;
+            // Micro-slice into 2,304-byte frames (12ms chunks at 48kHz Stereo 16-bit PCM)
+            int chunkSize = 2304;
             for (int offset = 0; offset < pcm16Stereo.Length; offset += chunkSize)
             {
                 int size = Math.Min(chunkSize, pcm16Stereo.Length - offset);
@@ -268,7 +268,7 @@ namespace PcAudioStreamer
                 {
                     TcpClient client = await _tcpListener.AcceptTcpClientAsync();
                     client.NoDelay = true;
-                    client.SendBufferSize = 4096; // 4KB socket buffer cap
+                    client.SendBufferSize = 4096;
                     client.ReceiveBufferSize = 4096;
                     _ = HandleClientHandshakeAsync(client, ct);
                 }

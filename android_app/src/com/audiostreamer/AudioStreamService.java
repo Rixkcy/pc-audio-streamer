@@ -98,7 +98,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                 .build();
 
-        int bufferSize = Math.max(minBufferSize, sampleRate * 4 * 60 / 1000); // 60ms Cap
+        int bufferSize = Math.max(minBufferSize, sampleRate * 4 * 40 / 1000); // 40ms Fast Buffer
 
         audioTrack = new AudioTrack.Builder()
                 .setAudioAttributes(attributes)
@@ -109,7 +109,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .build();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            int targetFrames = sampleRate * 60 / 1000;
+            int targetFrames = sampleRate * 40 / 1000;
             audioTrack.setBufferSizeInFrames(targetFrames);
         }
 
@@ -178,8 +178,8 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
             long pendingBytes = totalBytesWritten - head;
             long pendingMs = pendingBytes * 1000 / (currentSampleRate * 4);
 
-            // ANTI-DRIFT: Instant Purge if buffer queue exceeds 60ms!
-            if (pendingMs > 60) {
+            // ANTI-DRIFT: Purge if buffer queue exceeds 40ms!
+            if (pendingMs > 40) {
                 try {
                     audioTrack.pause();
                     audioTrack.flush();
@@ -194,13 +194,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 Log.d("AudioDiag", "BytesWritten: " + totalBytesWritten + " | BytesPlayed: " + head + " | PendingMs: " + pendingMs + "ms | RecvLen: " + length);
             }
 
-            int written;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                written = audioTrack.write(data, 0, alignedLength, AudioTrack.WRITE_NON_BLOCKING);
-            } else {
-                written = audioTrack.write(data, 0, alignedLength);
-            }
-
+            int written = audioTrack.write(data, 0, alignedLength);
             if (written > 0) {
                 totalBytesWritten += written;
             }
