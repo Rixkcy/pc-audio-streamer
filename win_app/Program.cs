@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -50,6 +51,7 @@ namespace PcAudioStreamer
         private CancellationTokenSource _cts;
         private WasapiLoopbackCapture _audioCapture;
         private MMDevice _speakerDevice;
+        private MMDevice _virtualDevice;
 
         private StreamMode _currentMode = StreamMode.PhoneOnly;
         private int _connectedClients = 0;
@@ -64,26 +66,43 @@ namespace PcAudioStreamer
             this.ShowInTaskbar = false;
             this.FormBorderStyle = FormBorderStyle.FixedToolWindow;
 
-            FindSpeakerDevice();
+            FindAudioDevices();
             InitializeTray();
             RegisterStartupIfRequested();
             StartAudioCapture();
             StartTcpServer();
             RegisterGlobalHotkey();
-            MuteSpeakers();
+            SetMode(StreamMode.PhoneOnly);
         }
 
-        private void FindSpeakerDevice()
+        private void FindAudioDevices()
         {
             try
             {
                 var enumerator = new MMDeviceEnumerator();
+
+                // Find physical speaker endpoint
                 _speakerDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                _speakerDevice.AudioEndpointVolume.OnVolumeNotification += OnVolumeChanged;
+                if (_speakerDevice != null)
+                {
+                    _speakerDevice.AudioEndpointVolume.OnVolumeNotification += OnVolumeChanged;
+                }
+
+                // Find Virtual Audio Device ("CABLE Input" / "Wireless Headphone")
+                foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+                {
+                    if (device.FriendlyName.IndexOf("CABLE Input", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        device.FriendlyName.IndexOf("Wireless", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        device.FriendlyName.IndexOf("VB-Audio", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        _virtualDevice = device;
+                        break;
+                    }
+                }
 
                 File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "device.log"),
-                    $"Default Device: {_speakerDevice.FriendlyName}\n" +
-                    $"Volume: {_speakerDevice.AudioEndpointVolume.MasterVolumeLevelScalar:P0}");
+                    $"Physical Device: {(_speakerDevice?.FriendlyName ?? "None")}\n" +
+                    $"Virtual Device: {(_virtualDevice?.FriendlyName ?? "None")}");
             }
             catch (Exception ex)
             {
@@ -95,12 +114,12 @@ namespace PcAudioStreamer
         {
             if (_currentMode == StreamMode.PhoneOnly && !_isEnforcingMute)
             {
-                if (!data.Muted)
+                if (!data.Muted && _speakerDevice != null)
                 {
                     _isEnforcingMute = true;
                     try
                     {
-                        if (_speakerDevice != null) _speakerDevice.AudioEndpointVolume.Mute = true;
+                        _speakerDevice.AudioEndpointVolume.Mute = true;
                     }
                     catch { }
                     finally
@@ -121,11 +140,11 @@ namespace PcAudioStreamer
         {
             _contextMenu = new ContextMenuStrip();
 
-            _statusItem = new ToolStripMenuItem("🎧 Headphones Only (Ctrl+End to toggle)") { Enabled = false };
+            _statusItem = new ToolStripMenuItem("🎧 Wireless Headphone Mode (Ctrl+End)") { Enabled = false };
             _contextMenu.Items.Add(_statusItem);
             _contextMenu.Items.Add(new ToolStripSeparator());
 
-            _modePhoneItem = new ToolStripMenuItem("🎧 Headphones Only (mutes PC)", null, (s, e) => SetMode(StreamMode.PhoneOnly));
+            _modePhoneItem = new ToolStripMenuItem("🎧 Phone Headphones (Wireless Device)", null, (s, e) => SetMode(StreamMode.PhoneOnly));
             _modeSpeakersItem = new ToolStripMenuItem("🔊 PC Speakers Only", null, (s, e) => SetMode(StreamMode.SpeakersOnly));
 
             _contextMenu.Items.Add(_modePhoneItem);
@@ -184,21 +203,34 @@ namespace PcAudioStreamer
             if (_currentMode == StreamMode.PhoneOnly)
             {
                 MuteSpeakers();
+                if (_virtualDevice != null) SetDefaultAudioDevice(_virtualDevice.ID);
             }
             else
             {
                 UnmuteSpeakers();
+                if (_speakerDevice != null) SetDefaultAudioDevice(_speakerDevice.ID);
             }
 
             string statusText = _currentMode switch
             {
-                StreamMode.PhoneOnly => "🎧 Headphones Only (PC muted)",
+                StreamMode.PhoneOnly => "🎧 Phone Headphones (Wireless Device)",
                 StreamMode.SpeakersOnly => "🔊 PC Speakers",
                 _ => "Unknown"
             };
 
             _statusItem.Text = $"{statusText} | Clients: {_connectedClients}";
             _notifyIcon.ShowBalloonTip(1500, "PC Audio Streamer", $"{statusText}\nCtrl+End to toggle", ToolTipIcon.Info);
+        }
+
+        private void SetDefaultAudioDevice(string deviceId)
+        {
+            try
+            {
+                var policyConfig = (IPolicyConfig)new PolicyConfigClient();
+                policyConfig.SetDefaultEndpoint(deviceId, ERole.eMultimedia);
+                policyConfig.SetDefaultEndpoint(deviceId, ERole.eConsole);
+            }
+            catch { }
         }
 
         private void MuteSpeakers()
@@ -272,11 +304,24 @@ namespace PcAudioStreamer
         {
             try
             {
-                _audioCapture = new WasapiLoopbackCapture();
+                if (_virtualDevice != null)
+                {
+                    _audioCapture = new WasapiLoopbackCapture(_virtualDevice);
+                }
+                else if (_speakerDevice != null)
+                {
+                    _audioCapture = new WasapiLoopbackCapture(_speakerDevice);
+                }
+                else
+                {
+                    _audioCapture = new WasapiLoopbackCapture();
+                }
+
                 _audioCapture.DataAvailable += OnAudioDataAvailable;
                 _audioCapture.StartRecording();
                 File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wasapi_error.log"),
-                    $"WasapiLoopbackCapture Started. Format: {_audioCapture.WaveFormat}");
+                    $"WasapiLoopbackCapture Started on: {(_virtualDevice?.FriendlyName ?? _speakerDevice?.FriendlyName ?? "Default")}\n" +
+                    $"Format: {_audioCapture.WaveFormat}");
             }
             catch (Exception ex)
             {
@@ -544,6 +589,27 @@ namespace PcAudioStreamer
                 return frame;
             }
         }
+    }
+
+    public enum ERole
+    {
+        eConsole = 0,
+        eMultimedia = 1,
+        eCommunications = 2
+    }
+
+    [ComImport, Guid("8702999F-0383-4E4A-A99B-42E3505E0269")]
+    public class PolicyConfigClient
+    {
+    }
+
+    [Guid("f8679f50-850a-41cf-9c72-430f2924a043"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IPolicyConfig
+    {
+        [PreserveSig] int GetGroupId();
+        [PreserveSig] int GetPropertyValue();
+        [PreserveSig] int SetPropertyValue();
+        [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string pszDeviceName, ERole role);
     }
 
     [Flags]
