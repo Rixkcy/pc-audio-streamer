@@ -78,14 +78,16 @@ public class HttpWebSocketClient {
 
                 listener.OnStatus("Connected to " + host + " & Streaming Live Audio");
 
-                // Read Clean, Valid WebSocket Frames (Zero Corrupt Headers)
+                // Read Clean WebSocket Frames
                 while (isRunning && !socket.isClosed()) {
                     int b1 = in.read();
                     if (b1 == -1) break;
                     int b2 = in.read();
                     if (b2 == -1) break;
 
+                    int opcode = b1 & 0x0F;
                     int len = b2 & 0x7F;
+
                     if (len == 126) {
                         int b3 = in.read();
                         int b4 = in.read();
@@ -108,7 +110,12 @@ public class HttpWebSocketClient {
                     }
 
                     if (totalRead > 0) {
-                        listener.OnAudioData(pcmBuffer, totalRead);
+                        if (opcode == 0x01) { // Text frame (e.g. "SR:44100")
+                            String msg = new String(pcmBuffer, 0, totalRead);
+                            listener.OnStatus(msg);
+                        } else {
+                            listener.OnAudioData(pcmBuffer, totalRead);
+                        }
                     }
                 }
             } catch (Exception e) {

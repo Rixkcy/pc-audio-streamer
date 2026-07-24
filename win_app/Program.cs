@@ -4,7 +4,6 @@ using System.Drawing;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -16,12 +15,6 @@ using NAudio.Wave;
 
 namespace PcAudioStreamer
 {
-    public enum StreamMode
-    {
-        PhoneOnly = 0,
-        SpeakersOnly = 1
-    }
-
     static class Program
     {
         [STAThread]
@@ -42,24 +35,20 @@ namespace PcAudioStreamer
     {
         private NotifyIcon _notifyIcon;
         private ContextMenuStrip _contextMenu;
-        private ToolStripMenuItem _modePhoneItem;
-        private ToolStripMenuItem _modeSpeakersItem;
         private ToolStripMenuItem _startupItem;
         private ToolStripMenuItem _statusItem;
 
         private TcpListener _tcpListener;
         private CancellationTokenSource _cts;
         private WasapiLoopbackCapture _audioCapture;
-        private MMDevice _speakerDevice;
         private MMDevice _virtualDevice;
+        private MMDevice _speakerDevice;
 
-        private StreamMode _currentMode = StreamMode.PhoneOnly;
         private int _connectedClients = 0;
-        private bool _isEnforcingMute = false;
+        private int _currentSampleRate = 48000;
 
         private const string AppName = "PcAudioStreamer";
         private const int Port = 8080;
-        private const int WM_HOTKEY = 0x0312;
 
         public MainForm()
         {
@@ -71,8 +60,6 @@ namespace PcAudioStreamer
             RegisterStartupIfRequested();
             StartAudioCapture();
             StartTcpServer();
-            RegisterGlobalHotkey();
-            SetMode(StreamMode.PhoneOnly);
         }
 
         private void FindAudioDevices()
@@ -80,15 +67,8 @@ namespace PcAudioStreamer
             try
             {
                 var enumerator = new MMDeviceEnumerator();
-
-                // Find physical speaker endpoint
                 _speakerDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                if (_speakerDevice != null)
-                {
-                    _speakerDevice.AudioEndpointVolume.OnVolumeNotification += OnVolumeChanged;
-                }
 
-                // Find Virtual Audio Device ("CABLE Input" / "Wireless Headphone")
                 foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
                 {
                     if (device.FriendlyName.IndexOf("CABLE Input", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -110,26 +90,6 @@ namespace PcAudioStreamer
             }
         }
 
-        private void OnVolumeChanged(AudioVolumeNotificationData data)
-        {
-            if (_currentMode == StreamMode.PhoneOnly && !_isEnforcingMute)
-            {
-                if (!data.Muted && _speakerDevice != null)
-                {
-                    _isEnforcingMute = true;
-                    try
-                    {
-                        _speakerDevice.AudioEndpointVolume.Mute = true;
-                    }
-                    catch { }
-                    finally
-                    {
-                        _isEnforcingMute = false;
-                    }
-                }
-            }
-        }
-
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
@@ -140,15 +100,8 @@ namespace PcAudioStreamer
         {
             _contextMenu = new ContextMenuStrip();
 
-            _statusItem = new ToolStripMenuItem("🎧 Wireless Headphone Mode (Ctrl+End)") { Enabled = false };
+            _statusItem = new ToolStripMenuItem("🎧 PC Audio Streamer Active") { Enabled = false };
             _contextMenu.Items.Add(_statusItem);
-            _contextMenu.Items.Add(new ToolStripSeparator());
-
-            _modePhoneItem = new ToolStripMenuItem("🎧 Phone Headphones (Wireless Device)", null, (s, e) => SetMode(StreamMode.PhoneOnly));
-            _modeSpeakersItem = new ToolStripMenuItem("🔊 PC Speakers Only", null, (s, e) => SetMode(StreamMode.SpeakersOnly));
-
-            _contextMenu.Items.Add(_modePhoneItem);
-            _contextMenu.Items.Add(_modeSpeakersItem);
             _contextMenu.Items.Add(new ToolStripSeparator());
 
             bool isStartup = IsInStartup();
@@ -165,106 +118,11 @@ namespace PcAudioStreamer
             {
                 Icon = SystemIcons.Application,
                 ContextMenuStrip = _contextMenu,
-                Text = "PC Audio Streamer (Ctrl+End)",
+                Text = "PC Audio Streamer",
                 Visible = true
             };
 
-            _notifyIcon.DoubleClick += (s, e) => ToggleMode();
-            UpdateMenuCheckmarks();
-        }
-
-        private void RegisterGlobalHotkey()
-        {
-            RegisterHotKey(this.Handle, 1, (uint)KeyModifiers.Control, 0x23);
-        }
-
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg == WM_HOTKEY)
-            {
-                ToggleMode();
-            }
-            base.WndProc(ref m);
-        }
-
-        public void ToggleMode()
-        {
-            if (_currentMode == StreamMode.PhoneOnly)
-                SetMode(StreamMode.SpeakersOnly);
-            else
-                SetMode(StreamMode.PhoneOnly);
-        }
-
-        public void SetMode(StreamMode mode)
-        {
-            _currentMode = mode;
-            UpdateMenuCheckmarks();
-
-            if (_currentMode == StreamMode.PhoneOnly)
-            {
-                MuteSpeakers();
-                if (_virtualDevice != null) SetDefaultAudioDevice(_virtualDevice.ID);
-            }
-            else
-            {
-                UnmuteSpeakers();
-                if (_speakerDevice != null) SetDefaultAudioDevice(_speakerDevice.ID);
-            }
-
-            string statusText = _currentMode switch
-            {
-                StreamMode.PhoneOnly => "🎧 Phone Headphones (Wireless Device)",
-                StreamMode.SpeakersOnly => "🔊 PC Speakers",
-                _ => "Unknown"
-            };
-
-            _statusItem.Text = $"{statusText} | Clients: {_connectedClients}";
-            _notifyIcon.ShowBalloonTip(1500, "PC Audio Streamer", $"{statusText}\nCtrl+End to toggle", ToolTipIcon.Info);
-        }
-
-        private void SetDefaultAudioDevice(string deviceId)
-        {
-            try
-            {
-                var policyConfig = (IPolicyConfig)new PolicyConfigClient();
-                policyConfig.SetDefaultEndpoint(deviceId, ERole.eMultimedia);
-                policyConfig.SetDefaultEndpoint(deviceId, ERole.eConsole);
-            }
-            catch { }
-        }
-
-        private void MuteSpeakers()
-        {
-            try
-            {
-                if (_speakerDevice != null)
-                {
-                    _isEnforcingMute = true;
-                    _speakerDevice.AudioEndpointVolume.Mute = true;
-                    _isEnforcingMute = false;
-                }
-            }
-            catch { _isEnforcingMute = false; }
-        }
-
-        private void UnmuteSpeakers()
-        {
-            try
-            {
-                if (_speakerDevice != null)
-                {
-                    _isEnforcingMute = true;
-                    _speakerDevice.AudioEndpointVolume.Mute = false;
-                    _isEnforcingMute = false;
-                }
-            }
-            catch { _isEnforcingMute = false; }
-        }
-
-        private void UpdateMenuCheckmarks()
-        {
-            _modePhoneItem.Checked = (_currentMode == StreamMode.PhoneOnly);
-            _modeSpeakersItem.Checked = (_currentMode == StreamMode.SpeakersOnly);
+            UpdateStatusText();
         }
 
         private bool IsInStartup()
@@ -317,6 +175,7 @@ namespace PcAudioStreamer
                     _audioCapture = new WasapiLoopbackCapture();
                 }
 
+                _currentSampleRate = _audioCapture.WaveFormat.SampleRate;
                 _audioCapture.DataAvailable += OnAudioDataAvailable;
                 _audioCapture.StartRecording();
                 File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wasapi_error.log"),
@@ -331,10 +190,29 @@ namespace PcAudioStreamer
 
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
-            if (_currentMode == StreamMode.SpeakersOnly || _connectedClients == 0 || e.BytesRecorded == 0)
+            if (_connectedClients == 0 || e.BytesRecorded == 0)
                 return;
 
-            byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded);
+            // Get PC Volume multiplier directly from active capture device
+            float volumeScalar = 1.0f;
+            try
+            {
+                MMDevice activeDev = _virtualDevice ?? _speakerDevice;
+                if (activeDev != null)
+                {
+                    if (activeDev.AudioEndpointVolume.Mute)
+                    {
+                        volumeScalar = 0.0f;
+                    }
+                    else
+                    {
+                        volumeScalar = activeDev.AudioEndpointVolume.MasterVolumeLevelScalar;
+                    }
+                }
+            }
+            catch { }
+
+            byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded, volumeScalar);
             if (pcm16Stereo.Length == 0) return;
 
             // Stream in 4608-byte micro-frames directly to TCP WebSocket
@@ -355,10 +233,10 @@ namespace PcAudioStreamer
             }
             double rms = Math.Sqrt(sum / Math.Max(1, pcm16Stereo.Length / 2));
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "volume.log"),
-                $"Timestamp: {DateTime.Now:HH:mm:ss.fff} | Bytes: {pcm16Stereo.Length} | RMS: {rms:F1} | Clients: {_connectedClients} | Mode: {_currentMode}");
+                $"Timestamp: {DateTime.Now:HH:mm:ss.fff} | Bytes: {pcm16Stereo.Length} | RMS: {rms:F1} | Vol: {volumeScalar:P0} | Clients: {_connectedClients}");
         }
 
-        private byte[] ConvertFloatToPcm16Stereo(byte[] inputBuffer, int length)
+        private byte[] ConvertFloatToPcm16Stereo(byte[] inputBuffer, int length, float volumeScalar)
         {
             int alignedLength = (length / 8) * 8;
             int sampleCount = alignedLength / 4;
@@ -366,7 +244,7 @@ namespace PcAudioStreamer
 
             for (int i = 0; i < sampleCount; i++)
             {
-                float floatSample = BitConverter.ToSingle(inputBuffer, i * 4);
+                float floatSample = BitConverter.ToSingle(inputBuffer, i * 4) * volumeScalar;
                 if (floatSample > 1.0f) floatSample = 1.0f;
                 if (floatSample < -1.0f) floatSample = -1.0f;
 
@@ -432,6 +310,11 @@ namespace PcAudioStreamer
                     byte[] respBytes = Encoding.UTF8.GetBytes(response);
                     await stream.WriteAsync(respBytes, 0, respBytes.Length, ct);
 
+                    // Send Sample Rate Header Frame (e.g. "SR:44100" or "SR:48000")
+                    string srHeader = $"SR:{_currentSampleRate}";
+                    byte[] srFrame = TcpBroadcastManager.CreateTextWebSocketFrame(srHeader);
+                    await stream.WriteAsync(srFrame, 0, srFrame.Length, ct);
+
                     Interlocked.Increment(ref _connectedClients);
                     TcpBroadcastManager.AddClient(client);
                     UpdateStatusText();
@@ -482,32 +365,18 @@ namespace PcAudioStreamer
                     this.Invoke((MethodInvoker)delegate { UpdateStatusText(); });
                     return;
                 }
-                string modeStr = _currentMode switch
-                {
-                    StreamMode.PhoneOnly => "🎧 Headphones",
-                    StreamMode.SpeakersOnly => "🔊 Speakers",
-                    _ => "?"
-                };
-                _statusItem.Text = $"{modeStr} | Clients: {_connectedClients}";
+                _statusItem.Text = $"🎧 Streaming ({_currentSampleRate}Hz) | Clients: {_connectedClients}";
             }
         }
 
         private void ExitApp()
         {
-            UnmuteSpeakers();
-            UnregisterHotKey(this.Handle, 1);
             _cts?.Cancel();
             _audioCapture?.StopRecording();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
             Application.Exit();
         }
-
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
-        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
-        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     }
 
     public static class TcpBroadcastManager
@@ -556,12 +425,22 @@ namespace PcAudioStreamer
             }
         }
 
+        public static byte[] CreateTextWebSocketFrame(string text)
+        {
+            byte[] data = Encoding.UTF8.GetBytes(text);
+            byte[] frame = new byte[2 + data.Length];
+            frame[0] = 0x81; // Text Frame
+            frame[1] = (byte)data.Length;
+            Array.Copy(data, 0, frame, 2, data.Length);
+            return frame;
+        }
+
         private static byte[] CreateWebSocketFrame(byte[] data, int length)
         {
             if (length < 126)
             {
                 byte[] frame = new byte[2 + length];
-                frame[0] = 0x82;
+                frame[0] = 0x82; // Binary Frame
                 frame[1] = (byte)length;
                 Array.Copy(data, 0, frame, 2, length);
                 return frame;
@@ -589,36 +468,5 @@ namespace PcAudioStreamer
                 return frame;
             }
         }
-    }
-
-    public enum ERole
-    {
-        eConsole = 0,
-        eMultimedia = 1,
-        eCommunications = 2
-    }
-
-    [ComImport, Guid("8702999F-0383-4E4A-A99B-42E3505E0269")]
-    public class PolicyConfigClient
-    {
-    }
-
-    [Guid("f8679f50-850a-41cf-9c72-430f2924a043"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    public interface IPolicyConfig
-    {
-        [PreserveSig] int GetGroupId();
-        [PreserveSig] int GetPropertyValue();
-        [PreserveSig] int SetPropertyValue();
-        [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string pszDeviceName, ERole role);
-    }
-
-    [Flags]
-    public enum KeyModifiers : uint
-    {
-        None = 0,
-        Alt = 1,
-        Control = 2,
-        Shift = 4,
-        Win = 8
     }
 }

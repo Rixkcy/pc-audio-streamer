@@ -68,7 +68,9 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
     }
 
     public synchronized void initAudioTrack(int sampleRate) {
-        if (audioTrack != null && currentSampleRate == sampleRate) return;
+        if (audioTrack != null && currentSampleRate == sampleRate && audioTrack.getState() == AudioTrack.STATE_INITIALIZED) {
+            return;
+        }
 
         if (audioTrack != null) {
             try {
@@ -104,13 +106,15 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
 
-        // 60ms Buffer Cap (2880 stereo frames = 60ms cushion) -> 0 Dropped Packets, 100% Smooth Audio!
+        // 60ms Buffer Cap matching PC capture rate
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioTrack.setBufferSizeInFrames(2880);
+            int targetFrames = sampleRate * 60 / 1000;
+            audioTrack.setBufferSizeInFrames(targetFrames);
         }
 
         totalBytesWritten = 0;
         audioTrack.play();
+        Log.d("AudioDiag", "AudioTrack Initialized at " + sampleRate + "Hz");
     }
 
     private String getUsbGatewayIp() {
@@ -171,7 +175,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
             long now = System.currentTimeMillis();
             long head = (audioTrack.getPlaybackHeadPosition() & 0xFFFFFFFFL) * 4;
             long pendingBytes = totalBytesWritten - head;
-            long pendingMs = pendingBytes * 1000 / (48000 * 4);
+            long pendingMs = pendingBytes * 1000 / (currentSampleRate * 4);
 
             if (now - lastLogTime > 1000) {
                 lastLogTime = now;
@@ -187,6 +191,15 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
 
     @Override
     public void OnStatus(String status) {
+        if (status != null && status.startsWith("SR:")) {
+            try {
+                int sr = Integer.parseInt(status.substring(3).trim());
+                if (sr >= 8000 && sr <= 192000) {
+                    initAudioTrack(sr);
+                    return;
+                }
+            } catch (Exception ignored) {}
+        }
         lastStatus = status;
         updateNotification(status);
     }
