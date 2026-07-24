@@ -45,6 +45,7 @@ namespace PcAudioStreamer
 
         private int _connectedClients = 0;
         private int _currentSampleRate = 48000;
+        private bool _wasSilent = false;
 
         private const string AppName = "PcAudioStreamer";
         private const int Port = 8080;
@@ -189,6 +190,28 @@ namespace PcAudioStreamer
             byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded, volumeScalar);
             if (pcm16Stereo.Length == 0) return;
 
+            double sum = 0;
+            for (int i = 0; i < pcm16Stereo.Length; i += 2)
+            {
+                short sample = (short)(pcm16Stereo[i] | (pcm16Stereo[i + 1] << 8));
+                sum += sample * sample;
+            }
+            double rms = Math.Sqrt(sum / Math.Max(1, pcm16Stereo.Length / 2));
+
+            // Instant Pause Signal: If RMS < 0.5 (silence), notify Android to flush queue
+            if (rms < 0.5)
+            {
+                if (!_wasSilent)
+                {
+                    _wasSilent = true;
+                    byte[] pauseFrame = TcpBroadcastManager.CreateTextWebSocketFrame("PAUSE");
+                    TcpBroadcastManager.BroadcastFrame(pauseFrame);
+                }
+                return; // Do not stream silence frames to TCP buffer!
+            }
+
+            _wasSilent = false;
+
             // Stream 4608-byte frames directly to TCP WebSocket
             int chunkSize = 4608;
             for (int offset = 0; offset < pcm16Stereo.Length; offset += chunkSize)
@@ -199,13 +222,6 @@ namespace PcAudioStreamer
                 TcpBroadcastManager.BroadcastAudioData(chunk, size);
             }
 
-            double sum = 0;
-            for (int i = 0; i < pcm16Stereo.Length; i += 2)
-            {
-                short sample = (short)(pcm16Stereo[i] | (pcm16Stereo[i + 1] << 8));
-                sum += sample * sample;
-            }
-            double rms = Math.Sqrt(sum / Math.Max(1, pcm16Stereo.Length / 2));
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "volume.log"),
                 $"Timestamp: {DateTime.Now:HH:mm:ss.fff} | Bytes: {pcm16Stereo.Length} | RMS: {rms:F1} | Vol: {volumeScalar:P0} | Clients: {_connectedClients}");
         }
@@ -252,6 +268,8 @@ namespace PcAudioStreamer
                 {
                     TcpClient client = await _tcpListener.AcceptTcpClientAsync();
                     client.NoDelay = true;
+                    client.SendBufferSize = 4096; // 4KB socket buffer cap
+                    client.ReceiveBufferSize = 4096;
                     _ = HandleClientHandshakeAsync(client, ct);
                 }
                 catch { }
@@ -376,9 +394,8 @@ namespace PcAudioStreamer
             }
         }
 
-        public static void BroadcastAudioData(byte[] data, int length)
+        public static void BroadcastFrame(byte[] frame)
         {
-            byte[] frame = CreateWebSocketFrame(data, length);
             foreach (var kv in Clients)
             {
                 if (kv.Value.Connected)
@@ -392,11 +409,13 @@ namespace PcAudioStreamer
                         Clients.TryRemove(kv.Key, out _);
                     }
                 }
-                else
-                {
-                    Clients.TryRemove(kv.Key, out _);
-                }
             }
+        }
+
+        public static void BroadcastAudioData(byte[] data, int length)
+        {
+            byte[] frame = CreateWebSocketFrame(data, length);
+            BroadcastFrame(frame);
         }
 
         public static byte[] CreateTextWebSocketFrame(string text)

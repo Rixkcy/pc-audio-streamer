@@ -47,6 +47,8 @@ public class HttpWebSocketClient {
                 listener.OnStatus("Connecting to " + host + ":" + port + "...");
                 socket = new Socket(host, port);
                 socket.setTcpNoDelay(true);
+                socket.setReceiveBufferSize(4096); // 4KB socket buffer cap (zero buffer delay)
+                socket.setSendBufferSize(4096);
 
                 InputStream in = socket.getInputStream();
                 OutputStream out = socket.getOutputStream();
@@ -110,7 +112,7 @@ public class HttpWebSocketClient {
                     }
 
                     if (totalRead > 0) {
-                        if (opcode == 0x01) { // Text frame (e.g. "SR:44100")
+                        if (opcode == 0x01) { // Text frame (e.g. "PAUSE" or "SR:44100")
                             String msg = new String(pcmBuffer, 0, totalRead);
                             listener.OnStatus(msg);
                         } else {

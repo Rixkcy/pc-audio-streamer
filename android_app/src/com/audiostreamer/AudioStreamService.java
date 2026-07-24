@@ -98,7 +98,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                 .build();
 
-        int bufferSize = Math.max(minBufferSize, sampleRate * 4 * 100 / 1000); // 100ms Smooth Buffer
+        int bufferSize = Math.max(minBufferSize, sampleRate * 4 * 60 / 1000); // 60ms Cap
 
         audioTrack = new AudioTrack.Builder()
                 .setAudioAttributes(attributes)
@@ -109,7 +109,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .build();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            int targetFrames = sampleRate * 100 / 1000;
+            int targetFrames = sampleRate * 60 / 1000;
             audioTrack.setBufferSizeInFrames(targetFrames);
         }
 
@@ -178,8 +178,8 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
             long pendingBytes = totalBytesWritten - head;
             long pendingMs = pendingBytes * 1000 / (currentSampleRate * 4);
 
-            // ANTI-DRIFT: Smooth Resynchronization if buffer ever exceeds 120ms
-            if (pendingMs > 120) {
+            // ANTI-DRIFT: Instant Purge if buffer queue exceeds 60ms!
+            if (pendingMs > 60) {
                 try {
                     audioTrack.pause();
                     audioTrack.flush();
@@ -194,7 +194,13 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 Log.d("AudioDiag", "BytesWritten: " + totalBytesWritten + " | BytesPlayed: " + head + " | PendingMs: " + pendingMs + "ms | RecvLen: " + length);
             }
 
-            int written = audioTrack.write(data, 0, alignedLength);
+            int written;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                written = audioTrack.write(data, 0, alignedLength, AudioTrack.WRITE_NON_BLOCKING);
+            } else {
+                written = audioTrack.write(data, 0, alignedLength);
+            }
+
             if (written > 0) {
                 totalBytesWritten += written;
             }
@@ -203,6 +209,19 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
 
     @Override
     public void OnStatus(String status) {
+        if ("PAUSE".equals(status)) {
+            if (audioTrack != null) {
+                try {
+                    audioTrack.pause();
+                    audioTrack.flush();
+                    totalBytesWritten = 0;
+                    audioTrack.play();
+                    Log.d("AudioDiag", "INSTANT PAUSE SIGNAL RECEIVED: Audio Track Flushed");
+                } catch (Exception ignored) {}
+            }
+            return;
+        }
+
         if (status != null && status.startsWith("SR:")) {
             try {
                 int sr = Integer.parseInt(status.substring(3).trim());
