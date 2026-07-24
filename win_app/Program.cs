@@ -41,8 +41,7 @@ namespace PcAudioStreamer
         private TcpListener _tcpListener;
         private CancellationTokenSource _cts;
         private WasapiLoopbackCapture _audioCapture;
-        private MMDevice _virtualDevice;
-        private MMDevice _speakerDevice;
+        private MMDeviceEnumerator _deviceEnumerator;
 
         private int _connectedClients = 0;
         private int _currentSampleRate = 48000;
@@ -55,39 +54,11 @@ namespace PcAudioStreamer
             this.ShowInTaskbar = false;
             this.FormBorderStyle = FormBorderStyle.FixedToolWindow;
 
-            FindAudioDevices();
+            _deviceEnumerator = new MMDeviceEnumerator();
             InitializeTray();
             RegisterStartupIfRequested();
             StartAudioCapture();
             StartTcpServer();
-        }
-
-        private void FindAudioDevices()
-        {
-            try
-            {
-                var enumerator = new MMDeviceEnumerator();
-                _speakerDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-
-                foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
-                {
-                    if (device.FriendlyName.IndexOf("CABLE Input", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        device.FriendlyName.IndexOf("Wireless", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        device.FriendlyName.IndexOf("VB-Audio", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        _virtualDevice = device;
-                        break;
-                    }
-                }
-
-                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "device.log"),
-                    $"Physical Device: {(_speakerDevice?.FriendlyName ?? "None")}\n" +
-                    $"Virtual Device: {(_virtualDevice?.FriendlyName ?? "None")}");
-            }
-            catch (Exception ex)
-            {
-                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "device.log"), ex.ToString());
-            }
         }
 
         protected override void OnShown(EventArgs e)
@@ -162,13 +133,16 @@ namespace PcAudioStreamer
         {
             try
             {
-                if (_virtualDevice != null)
+                MMDevice activeDevice = null;
+                try
                 {
-                    _audioCapture = new WasapiLoopbackCapture(_virtualDevice);
+                    activeDevice = _deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                 }
-                else if (_speakerDevice != null)
+                catch { }
+
+                if (activeDevice != null)
                 {
-                    _audioCapture = new WasapiLoopbackCapture(_speakerDevice);
+                    _audioCapture = new WasapiLoopbackCapture(activeDevice);
                 }
                 else
                 {
@@ -179,7 +153,7 @@ namespace PcAudioStreamer
                 _audioCapture.DataAvailable += OnAudioDataAvailable;
                 _audioCapture.StartRecording();
                 File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wasapi_error.log"),
-                    $"WasapiLoopbackCapture Started on: {(_virtualDevice?.FriendlyName ?? _speakerDevice?.FriendlyName ?? "Default")}\n" +
+                    $"WasapiLoopbackCapture Started on: {(activeDevice?.FriendlyName ?? "Default")}\n" +
                     $"Format: {_audioCapture.WaveFormat}");
             }
             catch (Exception ex)
@@ -193,20 +167,20 @@ namespace PcAudioStreamer
             if (_connectedClients == 0 || e.BytesRecorded == 0)
                 return;
 
-            // Get PC Volume multiplier directly from active capture device
+            // Read live master volume from default Windows audio endpoint
             float volumeScalar = 1.0f;
             try
             {
-                MMDevice activeDev = _virtualDevice ?? _speakerDevice;
-                if (activeDev != null)
+                MMDevice defaultDev = _deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                if (defaultDev != null)
                 {
-                    if (activeDev.AudioEndpointVolume.Mute)
+                    if (defaultDev.AudioEndpointVolume.Mute)
                     {
                         volumeScalar = 0.0f;
                     }
                     else
                     {
-                        volumeScalar = activeDev.AudioEndpointVolume.MasterVolumeLevelScalar;
+                        volumeScalar = defaultDev.AudioEndpointVolume.MasterVolumeLevelScalar;
                     }
                 }
             }
@@ -215,7 +189,7 @@ namespace PcAudioStreamer
             byte[] pcm16Stereo = ConvertFloatToPcm16Stereo(e.Buffer, e.BytesRecorded, volumeScalar);
             if (pcm16Stereo.Length == 0) return;
 
-            // Stream in 4608-byte micro-frames directly to TCP WebSocket
+            // Stream 4608-byte micro-frames directly to TCP WebSocket
             int chunkSize = 4608;
             for (int offset = 0; offset < pcm16Stereo.Length; offset += chunkSize)
             {

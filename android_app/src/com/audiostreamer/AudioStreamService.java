@@ -106,7 +106,7 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
 
-        // 60ms Buffer Cap matching PC capture rate
+        // 60ms Hardware Buffer Cap
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             int targetFrames = sampleRate * 60 / 1000;
             audioTrack.setBufferSizeInFrames(targetFrames);
@@ -176,6 +176,17 @@ public class AudioStreamService extends Service implements HttpWebSocketClient.A
             long head = (audioTrack.getPlaybackHeadPosition() & 0xFFFFFFFFL) * 4;
             long pendingBytes = totalBytesWritten - head;
             long pendingMs = pendingBytes * 1000 / (currentSampleRate * 4);
+
+            // ANTI-DRIFT FAST RESYNCHRONIZER: Flush if accumulated buffer exceeds 80ms!
+            if (pendingMs > 80) {
+                try {
+                    audioTrack.pause();
+                    audioTrack.flush();
+                    totalBytesWritten = 0;
+                    audioTrack.play();
+                    Log.d("AudioDiag", "LATENCY RESYNCHRONIZED: Purged " + pendingMs + "ms stale queue!");
+                } catch (Exception ignored) {}
+            }
 
             if (now - lastLogTime > 1000) {
                 lastLogTime = now;
